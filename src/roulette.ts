@@ -1,6 +1,6 @@
 import * as planck from 'planck';
 import {Marble} from './marble';
-import {Skills, zoomThreshold} from './data/constants';
+import {initialZoom, Skills, zoomThreshold} from './data/constants';
 import {ParticleManager} from './particleManager';
 import {StageDef, stages} from './data/maps';
 import { createBox, createJumper, createMover, parseName } from './utils/utils';
@@ -11,6 +11,9 @@ import {GameObject} from './gameObject';
 import options from './options';
 import { bound } from './utils/bound.decorator';
 import {Vec2} from 'planck';
+import { UIObject } from './UIObject';
+import { RankRenderer } from './rankRenderer';
+import {Minimap} from './minimap';
 
 export class Roulette extends EventTarget {
     private _world!: planck.World;
@@ -23,6 +26,7 @@ export class Roulette extends EventTarget {
 
     private _updateInterval = 10;
     private _timeScale = 1;
+    private _speed = 1;
 
     private _winners: Marble[] = [];
     private _objects: planck.Body[] = [];
@@ -36,8 +40,12 @@ export class Roulette extends EventTarget {
     private _effects: GameObject[] = [];
 
     private _winnerRank = 0;
+    private _totalMarbleCount = 0;
     private _goalDist: number = Infinity;
     private _isRunning: boolean = false;
+    private _winner: Marble | null = null;
+
+    private _uiObjects: UIObject[] = [];
 
     constructor() {
         super();
@@ -46,27 +54,43 @@ export class Roulette extends EventTarget {
         this._update();
     }
 
+    public getZoom() {
+        return initialZoom * this._camera.zoom;
+    }
+
+    private addUiObject(obj: UIObject) {
+        this._uiObjects.push(obj);
+        if (obj.onWheel) {
+            this._renderer.canvas.addEventListener('wheel', obj.onWheel);
+        }
+    }
+
     @bound
     private _update() {
         if (!this._lastTime) this._lastTime = Date.now();
         const currentTime = Date.now();
 
-        this._elapsed += currentTime - this._lastTime;
+        this._elapsed += (currentTime - this._lastTime) * this._speed;
+        if (this._elapsed > 100) {
+            this._elapsed %= 100;
+        }
         this._lastTime = currentTime;
 
+        const interval = this._updateInterval / 1000 * this._timeScale;
+
         while (this._elapsed >= this._updateInterval) {
-            this._world.step((this._updateInterval * this._timeScale) / 1000);
+            this._world.step(interval);
             this._updateMarbles(this._updateInterval);
             this._particleManager.update(this._updateInterval);
-
             this._updateEffects(this._updateInterval);
-
             this._elapsed -= this._updateInterval;
+            this._uiObjects.forEach(obj => obj.update(this._updateInterval));
         }
 
         if (this._marbles.length > 1) {
             this._marbles.sort((a, b) => b.y - a.y);
         }
+
 
         if (this._stage) {
             this._camera.update({
@@ -125,8 +149,14 @@ export class Roulette extends EventTarget {
             }
             if (marble.y > this._stage.goalY) {
                 this._winners.push(marble);
-                if (this._winners.length === this._winnerRank + 1) {
+                if (this._isRunning && this._winners.length === this._winnerRank + 1) {
                     this.dispatchEvent(new CustomEvent('goal', {detail: {winner: marble.name}}));
+                    this._winner = marble;
+                    this._isRunning = false;
+                    this._particleManager.shot(this._renderer.width, this._renderer.height);
+                } else if (this._isRunning && this._winnerRank === this._winners.length && this._winnerRank === this._totalMarbleCount - 1) {
+                    this.dispatchEvent(new CustomEvent('goal', {detail: {winner: this._marbles[i + 1].name}}));
+                    this._winner = this._marbles[i+1];
                     this._isRunning = false;
                     this._particleManager.shot(this._renderer.width, this._renderer.height);
                 }
@@ -170,7 +200,7 @@ export class Roulette extends EventTarget {
 
     private _render() {
         if (!this._stage) return;
-        this._renderer.render({
+        const renderParams = {
             camera: this._camera,
             stage: this._stage,
             objects: this._objects,
@@ -179,7 +209,10 @@ export class Roulette extends EventTarget {
             particleManager: this._particleManager,
             effects: this._effects,
             winnerRank: this._winnerRank,
-        });
+            winner: this._winner,
+            size: Vec2(this._renderer.width, this._renderer.height),
+        };
+        this._renderer.render(renderParams, this._uiObjects);
     }
 
     private _init() {
@@ -187,7 +220,37 @@ export class Roulette extends EventTarget {
             gravity: new planck.Vec2(0, 10),
         });
 
+        this.addUiObject(new RankRenderer());
+        this.attachEvent();
+        const minimap = new Minimap();
+        minimap.onViewportChange((pos) => {
+            if (pos) {
+                this._camera.setPosition(pos, false);
+                this._camera.lock(true);
+            } else {
+                this._camera.lock(false);
+            }
+        });
+        this.addUiObject(minimap);
         this._loadMap();
+    }
+
+    private attachEvent() {
+        this._renderer.canvas.addEventListener('mousemove', (e) => {
+            const sizeFactor = this._renderer.sizeFactor;
+            const pos = {x: e.offsetX * sizeFactor , y: e.offsetY * sizeFactor};
+            this._uiObjects.forEach((obj) => {
+                if (!obj.onMouseMove) return;
+                const bounds = obj.getBoundingBox();
+                if (!bounds) {
+                    obj.onMouseMove({...pos});
+                } else if (bounds && pos.x >= bounds.x && pos.y >= bounds.y && pos.x <= bounds.x + bounds.w && pos.y <= bounds.y + bounds.h) {
+                    obj.onMouseMove({x: pos.x - bounds.x, y: pos.y - bounds.y});
+                } else {
+                    obj.onMouseMove(undefined);
+                }
+            });
+        });
     }
 
     private _loadMap() {
@@ -228,6 +291,7 @@ export class Roulette extends EventTarget {
         this._marbles.forEach(marble => {
             this._world.destroyBody(marble.body);
         });
+        this._winner = null;
         this._winners = [];
         this._marbles = [];
     }
@@ -239,6 +303,17 @@ export class Roulette extends EventTarget {
             this._winnerRank = this._marbles.length - 1;
         }
         this._marbles.forEach(marble => marble.body.setActive(true));
+    }
+
+    public setSpeed(value: number) {
+        if (value <= 0) {
+            throw new Error('Speed multiplier must larger than 0');
+        }
+        this._speed = value;
+    }
+
+    public getSpeed() {
+        return this._speed;
     }
 
     public setWinningRank(rank: number) {
@@ -281,6 +356,7 @@ export class Roulette extends EventTarget {
                 }
             }
         });
+        this._totalMarbleCount = totalCount;
     }
 
     private _clearMap() {
@@ -314,7 +390,6 @@ export class Roulette extends EventTarget {
         const xPower = (Math.random() - 0.5) * 4;
         const yPower = (Math.random() - 0.5) * 4;
         const power = new Vec2(xPower, yPower);
-        console.log(`shake ${power}`);
         this._stageObjects.forEach(obj => {
             let contact = obj.getContactList();
             while(contact) {
