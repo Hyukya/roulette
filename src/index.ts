@@ -1,10 +1,11 @@
 import './localization';
-import { Roulette } from './roulette';
 import options from './options';
+import { registerServiceWorker } from './registerServiceWorker';
+import { Roulette } from './roulette';
+
+registerServiceWorker();
 
 const roulette = new Roulette();
 
-// eslint-disable-next-line
-(window as any).roullete = roulette;
-// eslint-disable-next-line
+(window as any).roulette = roulette;
 (window as any).options = options;

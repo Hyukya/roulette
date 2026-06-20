@@ -1,9 +1,11 @@
-import { VectorLike } from './VectorLike';
+import type { VectorLike } from './VectorLike';
 
 export type EntityShapeTypes = 'box' | 'circle' | 'polyline';
 
 export interface EntityShapeBase {
   type: EntityShapeTypes;
+  color?: string;
+  bloomColor?: string;
 }
 
 export interface EntityBoxShape extends EntityShapeBase {

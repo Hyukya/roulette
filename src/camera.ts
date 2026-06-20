@@ -1,7 +1,7 @@
-import { Marble } from './marble';
-import { StageDef } from './data/maps';
 import { initialZoom, zoomThreshold } from './data/constants';
-import { VectorLike } from './types/VectorLike';
+import type { StageDef } from './data/maps';
+import type { Marble } from './marble';
+import type { VectorLike } from './types/VectorLike';
 
 export class Camera {
   private _position: VectorLike = { x: 0, y: 0 };
@@ -9,6 +9,7 @@ export class Camera {
   private _zoom: number = 1;
   private _targetZoom: number = 1;
   private _locked = false;
+  private _shouldFollowMarbles = false;
 
   get zoom() {
     return this._zoom;
@@ -45,6 +46,22 @@ export class Camera {
     this._locked = v;
   }
 
+  startFollowingMarbles() {
+    this._shouldFollowMarbles = true;
+  }
+
+  initializePosition(center?: VectorLike, zoom?: number) {
+    const x = center?.x ?? 12.95;
+    const y = center?.y ?? 2;
+    const z = zoom ?? 1;
+
+    this._position = { x, y };
+    this._targetPosition = { x, y };
+    this._zoom = z;
+    this._targetZoom = z;
+    this._shouldFollowMarbles = false;
+  }
+
   update({
     marbles,
     stage,
@@ -69,16 +86,13 @@ export class Camera {
     this._zoom = this._interpolation(this._zoom, this._targetZoom);
   }
 
-  private _calcTargetPositionAndZoom(
-    marbles: Marble[],
-    stage: StageDef,
-    needToZoom: boolean,
-    targetIndex: number
-  ) {
+  private _calcTargetPositionAndZoom(marbles: Marble[], stage: StageDef, needToZoom: boolean, targetIndex: number) {
+    if (!this._shouldFollowMarbles) {
+      return;
+    }
+
     if (marbles.length > 0) {
-      const targetMarble = marbles[targetIndex]
-        ? marbles[targetIndex]
-        : marbles[0];
+      const targetMarble = marbles[targetIndex] ? marbles[targetIndex] : marbles[0];
       this.setPosition(targetMarble.position);
       if (needToZoom) {
         const goalDist = Math.abs(stage.zoomY - this._position.y);
@@ -87,7 +101,6 @@ export class Camera {
         this.zoom = 1;
       }
     } else {
-      this.setPosition({ x: 0, y: 0 });
       this.zoom = 1;
     }
   }
@@ -101,18 +114,12 @@ export class Camera {
     return current + d / 10;
   }
 
-  renderScene(
-    ctx: CanvasRenderingContext2D,
-    callback: (ctx: CanvasRenderingContext2D) => void
-  ) {
+  renderScene(ctx: CanvasRenderingContext2D, callback: (ctx: CanvasRenderingContext2D) => void) {
     const zoomFactor = initialZoom * 2 * this._zoom;
     ctx.save();
     ctx.translate(-this.x * this._zoom, -this.y * this._zoom);
     ctx.scale(this.zoom, this.zoom);
-    ctx.translate(
-      ctx.canvas.width / zoomFactor,
-      ctx.canvas.height / zoomFactor
-    );
+    ctx.translate(ctx.canvas.width / zoomFactor, ctx.canvas.height / zoomFactor);
     callback(ctx);
     ctx.restore();
   }

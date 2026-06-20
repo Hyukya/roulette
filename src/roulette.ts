@@ -1,28 +1,29 @@
-import { Marble } from './marble';
-import { initialZoom, Skills, zoomThreshold } from './data/constants';
-import { ParticleManager } from './particleManager';
-import { StageDef, stages } from './data/maps';
-import { parseName } from './utils/utils';
 import { Camera } from './camera';
+import { canvasHeight, canvasWidth, initialZoom, Skills, Themes, zoomThreshold } from './data/constants';
+import { type StageDef, stages } from './data/maps';
+import { FastForwader } from './fastForwader';
+import type { GameObject } from './gameObject';
+import type { IPhysics } from './IPhysics';
+import { Marble } from './marble';
+import { Minimap } from './minimap';
+import options from './options';
+import { ParticleManager } from './particleManager';
+import { Box2dPhysics } from './physics-box2d';
+import { RankRenderer } from './rankRenderer';
 import { RouletteRenderer } from './rouletteRenderer';
 import { SkillEffect } from './skillEffect';
-import { GameObject } from './gameObject';
-import options from './options';
+import type { ColorTheme } from './types/ColorTheme';
+import type { MouseEventHandlerName, MouseEventName } from './types/mouseEvents.type';
+import type { UIObject } from './UIObject';
 import { bound } from './utils/bound.decorator';
-import { UIObject } from './UIObject';
-import { RankRenderer } from './rankRenderer';
-import { Minimap } from './minimap';
+import { parseName, shuffle } from './utils/utils';
 import { VideoRecorder } from './utils/videoRecorder';
-import { IPhysics } from './IPhysics';
-import { Box2dPhysics } from './physics-box2d';
 
 export class Roulette extends EventTarget {
   private _marbles: Marble[] = [];
 
   private _lastTime: number = 0;
   private _elapsed: number = 0;
-  private _noMoveDuration: number = 0;
-  private _shakeAvailable: boolean = false;
 
   private _updateInterval = 10;
   private _timeScale = 1;
@@ -32,8 +33,8 @@ export class Roulette extends EventTarget {
   private _particleManager = new ParticleManager();
   private _stage: StageDef | null = null;
 
-  private _camera: Camera = new Camera();
-  private _renderer: RouletteRenderer = new RouletteRenderer();
+  protected _camera: Camera = new Camera();
+  protected _renderer: RouletteRenderer;
 
   private _effects: GameObject[] = [];
 
@@ -51,12 +52,24 @@ export class Roulette extends EventTarget {
   private physics!: IPhysics;
 
   private _isReady: boolean = false;
+  protected fastForwarder!: FastForwader;
+  protected _theme: ColorTheme = Themes.dark;
+
   get isReady() {
     return this._isReady;
   }
 
+  protected createRenderer(): RouletteRenderer {
+    return new RouletteRenderer();
+  }
+
+  protected createFastForwader(): FastForwader {
+    return new FastForwader();
+  }
+
   constructor() {
     super();
+    this._renderer = this.createRenderer();
     this._renderer.init().then(() => {
       this._init().then(() => {
         this._isReady = true;
@@ -74,6 +87,12 @@ export class Roulette extends EventTarget {
     if (obj.onWheel) {
       this._renderer.canvas.addEventListener('wheel', obj.onWheel);
     }
+    if (obj.onMessage) {
+      obj.onMessage((msg) => {
+        console.log('onMessage', msg);
+        this.dispatchEvent(new CustomEvent('message', { detail: msg }));
+      });
+    }
   }
 
   @bound
@@ -81,7 +100,7 @@ export class Roulette extends EventTarget {
     if (!this._lastTime) this._lastTime = Date.now();
     const currentTime = Date.now();
 
-    this._elapsed += (currentTime - this._lastTime) * this._speed;
+    this._elapsed += (currentTime - this._lastTime) * this._speed * this.fastForwarder.speed;
     if (this._elapsed > 100) {
       this._elapsed %= 100;
     }
@@ -107,21 +126,8 @@ export class Roulette extends EventTarget {
         marbles: this._marbles,
         stage: this._stage,
         needToZoom: this._goalDist < zoomThreshold,
-        targetIndex:
-          this._winners.length > 0
-            ? this._winnerRank - this._winners.length
-            : 0,
+        targetIndex: this._winners.length > 0 ? this._winnerRank - this._winners.length : 0,
       });
-
-      if (
-        this._isRunning &&
-        this._marbles.length > 0 &&
-        this._noMoveDuration > 3000
-      ) {
-        this._changeShakeAvailable(true);
-      } else {
-        this._changeShakeAvailable(false);
-      }
     }
 
     this._render();
@@ -141,15 +147,10 @@ export class Roulette extends EventTarget {
       if (marble.y > this._stage.goalY) {
         this._winners.push(marble);
         if (this._isRunning && this._winners.length === this._winnerRank + 1) {
-          this.dispatchEvent(
-            new CustomEvent('goal', { detail: { winner: marble.name } }),
-          );
+          this.dispatchEvent(new CustomEvent('goal', { detail: { winner: marble.name } }));
           this._winner = marble;
           this._isRunning = false;
-          this._particleManager.shot(
-            this._renderer.width,
-            this._renderer.height,
-          );
+          this._particleManager.shot(this._renderer.width, this._renderer.height);
           setTimeout(() => {
             this._recorder.stop();
           }, 1000);
@@ -161,14 +162,11 @@ export class Roulette extends EventTarget {
           this.dispatchEvent(
             new CustomEvent('goal', {
               detail: { winner: this._marbles[i + 1].name },
-            }),
+            })
           );
           this._winner = this._marbles[i + 1];
           this._isRunning = false;
-          this._particleManager.shot(
-            this._renderer.width,
-            this._renderer.height,
-          );
+          this._particleManager.shot(this._renderer.width, this._renderer.height);
           setTimeout(() => {
             this._recorder.stop();
           }, 1000);
@@ -184,21 +182,15 @@ export class Roulette extends EventTarget {
     this._goalDist = Math.abs(this._stage.zoomY - topY);
     this._timeScale = this._calcTimeScale();
 
-    this._marbles = this._marbles.filter(
-      (marble) => marble.y <= this._stage!.goalY,
-    );
+    this._marbles = this._marbles.filter((marble) => marble.y <= this._stage?.goalY);
   }
 
   private _calcTimeScale(): number {
     if (!this._stage) return 1;
     const targetIndex = this._winnerRank - this._winners.length;
-    if (
-      this._winners.length < this._winnerRank + 1 &&
-      this._goalDist < zoomThreshold
-    ) {
+    if (this._winners.length < this._winnerRank + 1 && this._goalDist < zoomThreshold) {
       if (
-        this._marbles[targetIndex].y >
-        this._stage.zoomY - zoomThreshold * 1.2 &&
+        this._marbles[targetIndex].y > this._stage.zoomY - zoomThreshold * 1.2 &&
         (this._marbles[targetIndex - 1] || this._marbles[targetIndex + 1])
       ) {
         return Math.max(0.2, this._goalDist / zoomThreshold);
@@ -225,6 +217,7 @@ export class Roulette extends EventTarget {
       winnerRank: this._winnerRank,
       winner: this._winner,
       size: { x: this._renderer.width, y: this._renderer.height },
+      theme: this._theme,
     };
     this._renderer.render(renderParams, this._uiObjects);
   }
@@ -247,31 +240,57 @@ export class Roulette extends EventTarget {
       }
     });
     this.addUiObject(minimap);
+    this.fastForwarder = this.createFastForwader();
+    this.addUiObject(this.fastForwarder);
     this._stage = stages[0];
     this._loadMap();
   }
 
+  @bound
+  private mouseHandler(eventName: MouseEventName, e: MouseEvent) {
+    const handlerName = `on${eventName}` as MouseEventHandlerName;
+
+    const sizeFactor = this._renderer.sizeFactor;
+    const pos = { x: e.offsetX * sizeFactor, y: e.offsetY * sizeFactor };
+    this._uiObjects.forEach((obj) => {
+      if (!obj[handlerName]) return;
+      const bounds = obj.getBoundingBox();
+      if (!bounds) {
+        obj[handlerName]({ ...pos, button: e.button });
+      } else if (
+        bounds &&
+        pos.x >= bounds.x &&
+        pos.y >= bounds.y &&
+        pos.x <= bounds.x + bounds.w &&
+        pos.y <= bounds.y + bounds.h
+      ) {
+        obj[handlerName]({ x: pos.x - bounds.x, y: pos.y - bounds.y, button: e.button });
+      } else {
+        obj[handlerName](undefined);
+      }
+    });
+  }
+
   private attachEvent() {
-    this._renderer.canvas.addEventListener('mousemove', (e) => {
-      const sizeFactor = this._renderer.sizeFactor;
-      const pos = { x: e.offsetX * sizeFactor, y: e.offsetY * sizeFactor };
-      this._uiObjects.forEach((obj) => {
-        if (!obj.onMouseMove) return;
-        const bounds = obj.getBoundingBox();
-        if (!bounds) {
-          obj.onMouseMove({ ...pos });
-        } else if (
-          bounds &&
-          pos.x >= bounds.x &&
-          pos.y >= bounds.y &&
-          pos.x <= bounds.x + bounds.w &&
-          pos.y <= bounds.y + bounds.h
-        ) {
-          obj.onMouseMove({ x: pos.x - bounds.x, y: pos.y - bounds.y });
-        } else {
-          obj.onMouseMove(undefined);
-        }
-      });
+    const canvas = this._renderer.canvas;
+    const onPointerRelease = (e: Event) => {
+      this.mouseHandler('MouseUp', e as MouseEvent);
+      window.removeEventListener('pointerup', onPointerRelease);
+      window.removeEventListener('pointercancel', onPointerRelease);
+    };
+
+    canvas.addEventListener('pointerdown', (e: Event) => {
+      this.mouseHandler('MouseDown', e as MouseEvent);
+      window.addEventListener('pointerup', onPointerRelease);
+      window.addEventListener('pointercancel', onPointerRelease);
+    });
+
+    ['MouseMove', 'DblClick'].forEach((ev) => {
+      // @ts-expect-error
+      canvas.addEventListener(ev.toLowerCase().replace('mouse', 'pointer'), this.mouseHandler.bind(this, ev));
+    });
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
     });
   }
 
@@ -281,6 +300,7 @@ export class Roulette extends EventTarget {
     }
 
     this.physics.createStage(this._stage);
+    this._camera.initializePosition();
   }
 
   public clearMarbles() {
@@ -296,6 +316,8 @@ export class Roulette extends EventTarget {
     if (this._winnerRank >= this._marbles.length) {
       this._winnerRank = this._marbles.length - 1;
     }
+    this._camera.startFollowingMarbles();
+
     if (this._autoRecording) {
       this._recorder.start().then(() => {
         this.physics.start();
@@ -312,6 +334,10 @@ export class Roulette extends EventTarget {
       throw new Error('Speed multiplier must larger than 0');
     }
     this._speed = value;
+  }
+
+  public setTheme(themeName: keyof typeof Themes) {
+    this._theme = Themes[themeName];
   }
 
   public getSpeed() {
@@ -354,27 +380,41 @@ export class Roulette extends EventTarget {
       }
     });
 
-    const orders = Array(totalCount)
-      .fill(0)
-      .map((_, i) => i)
-      .sort(() => Math.random() - 0.5);
+    const orders = shuffle(
+      Array(totalCount)
+        .fill(0)
+        .map((_, i) => i)
+    );
     members.forEach((member) => {
       if (member) {
         for (let j = 0; j < member.count; j++) {
           const order = orders.pop() || 0;
-          this._marbles.push(
-            new Marble(
-              this.physics,
-              order,
-              totalCount,
-              member.name,
-              member.weight,
-            ),
-          );
+          this._marbles.push(new Marble(this.physics, order, totalCount, member.name, member.weight));
         }
       }
     });
     this._totalMarbleCount = totalCount;
+
+    // 카메라를 구슬 생성 위치 중앙으로 이동 + 줌인
+    if (totalCount > 0) {
+      const cols = Math.min(totalCount, 10);
+      const rows = Math.ceil(totalCount / 10);
+      const lineDelta = -Math.max(0, Math.ceil(rows - 5));
+      const centerX = 10.25 + (cols - 1) * 0.3;
+      const centerY = (1 + rows) / 2 + lineDelta;
+
+      const spawnWidth = Math.max((cols - 1) * 0.6, 1);
+      const spawnHeight = Math.max(rows - 1, 1);
+      const margin = 3;
+      const viewW = canvasWidth / initialZoom;
+      const viewH = canvasHeight / initialZoom;
+      const zoom = Math.max(
+        1.5,
+        Math.min(Math.min(viewW / (spawnWidth + margin * 2), viewH / (spawnHeight + margin * 2)), 3)
+      );
+
+      this._camera.initializePosition({ x: centerX, y: centerY }, zoom);
+    }
   }
 
   private _clearMap() {
@@ -393,19 +433,6 @@ export class Roulette extends EventTarget {
     return this._marbles.length;
   }
 
-  private _changeShakeAvailable(v: boolean) {
-    if (this._shakeAvailable !== v) {
-      this._shakeAvailable = v;
-      this.dispatchEvent(
-        new CustomEvent('shakeAvailableChanged', { detail: v }),
-      );
-    }
-  }
-
-  public shake() {
-    if (!this._shakeAvailable) return;
-  }
-
   public getMaps() {
     return stages.map((stage, index) => {
       return {
@@ -422,5 +449,6 @@ export class Roulette extends EventTarget {
     const names = this._marbles.map((marble) => marble.name);
     this._stage = stages[index];
     this.setMarbles(names);
+    this._camera.initializePosition();
   }
 }

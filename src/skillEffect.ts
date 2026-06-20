@@ -1,5 +1,6 @@
-import { GameObject } from './gameObject';
-import { VectorLike } from './types/VectorLike';
+import type { GameObject } from './gameObject';
+import type { ColorTheme } from './types/ColorTheme';
+import type { VectorLike } from './types/VectorLike';
 
 const lifetime = 500;
 
@@ -21,11 +22,11 @@ export class SkillEffect implements GameObject {
     }
   }
 
-  render(ctx: CanvasRenderingContext2D, zoom: number) {
+  render(ctx: CanvasRenderingContext2D, zoom: number, theme: ColorTheme) {
     ctx.save();
     const rate = this._elapsed / lifetime;
     ctx.globalAlpha = 1 - rate * rate;
-    ctx.strokeStyle = 'white';
+    ctx.strokeStyle = theme.skillColor;
     ctx.lineWidth = 1 / zoom;
     ctx.beginPath();
     ctx.arc(this.position.x, this.position.y, this._size, 0, Math.PI * 2);
